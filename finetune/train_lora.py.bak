@@ -1,0 +1,606 @@
+"""
+LoRA fine-tuning script - trains a LoRA adapter on top of the 4-bit
+quantised Mistral-7B-Instruct-v0.3 base model using instruction-tuning data.
+
+Upgraded pipeline: deeper LoRA (r=64), MLP targeting, cosine decay,
+multi-round training, live progress display, and post-training evaluation.
+
+Usage:
+    python -m finetune.train_lora \\
+        --data finetune/data/dsa_master_training.jsonl \\
+        --output adapters/v_20260302_120000 \\
+        --max-steps 1500
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import logging
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import torch
+from datasets import Dataset
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainerCallback,
+)
+from trl import SFTConfig, SFTTrainer
+
+# Monkey-patch the bitsandbytes 4-bit quantizer to allow CPU-offload device
+# maps.  On Windows WDDM the memory estimator often overestimates model size
+# and creates a device-map that includes CPU entries.  The 4-bit quantizer
+# then rejects it, even though the model *does* fit entirely on GPU once
+# quantised.  Patching the validation lets `device_map="auto"` proceed; the
+# actual allocation succeeds because the quantised model is only ~3.9 GB.
+try:
+    from transformers.quantizers.quantizer_bnb_4bit import Bnb4BitHfQuantizer
+
+    _orig_validate_env = Bnb4BitHfQuantizer.validate_environment
+
+    def _patched_validate_env(self, **kwargs):
+        try:
+            return _orig_validate_env(self, **kwargs)
+        except ValueError:
+            logger.warning(
+                "Suppressed bnb 4-bit CPU-offload validation error "
+                "(model fits on GPU after quantisation)."
+            )
+
+    Bnb4BitHfQuantizer.validate_environment = _patched_validate_env
+except Exception:
+    pass  # If the import path changes, just skip the patch
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# -- Defaults -----------------------------------------------------------------
+
+DEFAULT_MODEL_ID = "models/Mistral-7B-Instruct-v0.3"
+DEFAULT_MAX_SEQ_LEN = 512
+DEFAULT_LORA_R = 64
+DEFAULT_LORA_ALPHA = 128
+DEFAULT_LORA_DROPOUT = 0.05
+DEFAULT_TARGET_MODULES = [
+    "q_proj", "k_proj", "v_proj", "o_proj",
+    "gate_proj", "up_proj", "down_proj",
+]
+DEFAULT_BATCH_SIZE = 1
+DEFAULT_GRAD_ACCUM = 2
+DEFAULT_LEARNING_RATE = 1e-4
+DEFAULT_MAX_STEPS = 1500
+DEFAULT_WARMUP_STEPS = 100
+DEFAULT_LR_SCHEDULER = "cosine"
+DEFAULT_LOGGING_STEPS = 10
+DEFAULT_SAVE_STEPS = 100
+DEFAULT_SAVE_TOTAL_LIMIT = 3
+
+
+# -- Live Progress Callback ---------------------------------------------------
+
+class LiveProgressCallback(TrainerCallback):
+    """Prints a rich ASCII progress table at every logging step.
+    All display logic is try/excepted so failures never interrupt training."""
+
+    def __init__(self, total_steps: int, bar_width: int = 50):
+        self.total_steps = total_steps
+        self.bar_width = bar_width
+        self.loss_history: List[float] = []
+        self.start_time: Optional[float] = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        try:
+            self.start_time = time.time()
+            sep = "=" * 60
+            print(f"\n{sep}")
+            print(f"  TRAINING STARTED -- {self.total_steps} steps")
+            print(f"{sep}\n")
+        except Exception:
+            pass
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        try:
+            if logs is None or state.global_step == 0:
+                return
+            loss = logs.get("loss", None)
+            lr = logs.get("learning_rate", None)
+            if loss is not None:
+                self.loss_history.append(loss)
+
+            trend = "-"
+            if len(self.loss_history) >= 3:
+                recent = self.loss_history[-3:]
+                if recent[-1] < recent[0] - 0.01:
+                    trend = "v"
+                elif recent[-1] > recent[0] + 0.01:
+                    trend = "^"
+                else:
+                    trend = ">"
+            elif len(self.loss_history) >= 2:
+                if self.loss_history[-1] < self.loss_history[-2]:
+                    trend = "v"
+                elif self.loss_history[-1] > self.loss_history[-2]:
+                    trend = "^"
+                else:
+                    trend = ">"
+
+            eta_str = "calculating..."
+            if self.start_time is not None and state.global_step > 0:
+                elapsed = time.time() - self.start_time
+                avg_step_time = elapsed / state.global_step
+                remaining_steps = self.total_steps - state.global_step
+                eta_seconds = avg_step_time * remaining_steps
+                if eta_seconds >= 3600:
+                    eta_str = f"{int(eta_seconds // 3600)}h {int((eta_seconds % 3600) // 60)}m"
+                else:
+                    eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+
+            progress = min(state.global_step / self.total_steps, 1.0)
+            filled = int(self.bar_width * progress)
+            bar = "#" * filled + "-" * (self.bar_width - filled)
+            pct = progress * 100
+
+            loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+            lr_str = f"{lr:.2e}" if lr is not None else "N/A"
+
+            sep = "=" * 60
+            print(sep)
+            print(
+                f"Step {state.global_step:>5}/{self.total_steps} | "
+                f"Loss: {loss_str} {trend} | "
+                f"LR: {lr_str} | "
+                f"ETA: {eta_str}"
+            )
+            print(f"[{bar}] {pct:.1f}%")
+            print(sep)
+        except Exception as e:
+            logger.debug("Progress display error (non-fatal): %s", e)
+
+    def on_train_end(self, args, state, control, **kwargs):
+        try:
+            elapsed = time.time() - self.start_time if self.start_time else 0
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            sep = "=" * 60
+            print(f"\n{sep}")
+            print(f"  TRAINING FINISHED -- {state.global_step} steps in {mins}m {secs}s")
+            if self.loss_history:
+                print(f"  Final loss: {self.loss_history[-1]:.4f}")
+                print(f"  Best loss:  {min(self.loss_history):.4f}")
+            print(f"{sep}\n")
+        except Exception:
+            pass
+
+
+# -- Data loading --------------------------------------------------------------
+
+def load_jsonl(path: str) -> List[Dict[str, str]]:
+    """Load instruction-tuning JSONL (one JSON object per line)."""
+    records = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    logger.info("Loaded %d records from %s", len(records), path)
+    return records
+
+
+def format_for_sft(records: List[Dict[str, str]], tokenizer=None) -> Dataset:
+    """Convert instruction records to the text column expected by SFTTrainer."""
+    texts = []
+    for rec in records:
+        instruction = rec["instruction"]
+        context = rec.get("context", "")
+        response = rec["response"]
+
+        user_part = instruction
+        if context:
+            user_part = f"[Reference Material]\n{context}\n\n[Question]\n{instruction}"
+
+        messages = [
+            {"role": "system", "content": "You are an expert DSA tutor. Be concise and give examples."},
+            {"role": "user", "content": user_part},
+            {"role": "assistant", "content": response},
+        ]
+
+        if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+        else:
+            text = (
+                f"[INST] You are an expert DSA tutor. Be concise and give examples.\n\n"
+                f"{user_part} [/INST]{response}</s>"
+            )
+        texts.append(text)
+
+    return Dataset.from_dict({"text": texts})
+
+
+# -- Training (single round) --------------------------------------------------
+
+def train(
+    data_path: str,
+    output_dir: str,
+    model_id: str = DEFAULT_MODEL_ID,
+    max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
+    lora_r: int = DEFAULT_LORA_R,
+    lora_alpha: int = DEFAULT_LORA_ALPHA,
+    lora_dropout: float = DEFAULT_LORA_DROPOUT,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    grad_accum: int = DEFAULT_GRAD_ACCUM,
+    learning_rate: float = DEFAULT_LEARNING_RATE,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    warmup_steps: int = DEFAULT_WARMUP_STEPS,
+    lr_scheduler_type: str = DEFAULT_LR_SCHEDULER,
+    logging_steps: int = DEFAULT_LOGGING_STEPS,
+    save_steps: int = DEFAULT_SAVE_STEPS,
+    save_total_limit: int = DEFAULT_SAVE_TOTAL_LIMIT,
+    target_modules: Optional[List[str]] = None,
+    resume_from_adapter: Optional[str] = None,
+) -> tuple:
+    """Run LoRA fine-tuning and save the adapter.
+    Returns (adapter_path, start_loss, end_loss)."""
+    if target_modules is None:
+        target_modules = list(DEFAULT_TARGET_MODULES)
+
+    records = load_jsonl(data_path)
+    if not records:
+        raise ValueError(f"No training data found in {data_path}")
+
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    logger.info("Loading base model %s in 4-bit ...", model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dataset = format_for_sft(records, tokenizer)
+
+    # Force-clear GPU state before heavy model load
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        device_map="auto",
+        max_memory={0: "20GiB"},
+        trust_remote_code=False,
+    )
+
+    if resume_from_adapter and Path(resume_from_adapter).exists():
+        logger.info("Loading adapter from %s for continued training ...", resume_from_adapter)
+        model = PeftModel.from_pretrained(model, resume_from_adapter, is_trainable=True)
+        lora_config = None
+    else:
+        lora_config = LoraConfig(
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            target_modules=target_modules,
+            task_type=TaskType.CAUSAL_LM,
+            bias="none",
+        )
+        logger.info(
+            "LoRA config: r=%d, alpha=%d, dropout=%.2f, targets=%s",
+            lora_r, lora_alpha, lora_dropout, target_modules,
+        )
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    training_args = SFTConfig(
+        output_dir=str(out),
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=learning_rate,
+        max_steps=max_steps,
+        max_length=max_seq_len,
+        logging_steps=logging_steps,
+        save_steps=save_steps,
+        save_total_limit=save_total_limit,
+        fp16=True,
+        bf16=False,
+        gradient_checkpointing=True,
+        optim="adamw_bnb_8bit",
+        report_to="none",
+        dataset_text_field="text",
+        warmup_steps=warmup_steps,
+        lr_scheduler_type=lr_scheduler_type,
+        dataloader_pin_memory=False,
+    )
+
+    progress_cb = LiveProgressCallback(total_steps=max_steps)
+
+    trainer = SFTTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=dataset,
+        peft_config=lora_config,
+        processing_class=tokenizer,
+        callbacks=[progress_cb],
+    )
+
+    # Cast any remaining bfloat16 parameters to float16 so the fp16
+    # GradScaler can process them (RTX 20xx has no native bf16 support).
+    for param in trainer.model.parameters():
+        if param.dtype == torch.bfloat16:
+            param.data = param.data.to(torch.float16)
+
+    logger.info("Starting LoRA training (max_steps=%d) ...", max_steps)
+    trainer.train()
+
+    trainer.save_model(str(out))
+    tokenizer.save_pretrained(str(out))
+    logger.info("Adapter saved to %s", out)
+
+    start_loss = progress_cb.loss_history[0] if progress_cb.loss_history else None
+    end_loss = progress_cb.loss_history[-1] if progress_cb.loss_history else None
+
+    del trainer
+    del model
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    return str(out), start_loss, end_loss
+
+
+# -- Multi-round training -----------------------------------------------------
+
+def train_rounds(
+    data_path: str,
+    base_output_dir: str,
+    model_id: str = DEFAULT_MODEL_ID,
+    max_seq_len: int = DEFAULT_MAX_SEQ_LEN,
+    lora_r: int = DEFAULT_LORA_R,
+    lora_alpha: int = DEFAULT_LORA_ALPHA,
+    lora_dropout: float = DEFAULT_LORA_DROPOUT,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    grad_accum: int = DEFAULT_GRAD_ACCUM,
+    target_modules: Optional[List[str]] = None,
+) -> str:
+    """Train in 3 rounds with decaying learning rate.
+    Returns the final adapter path."""
+    rounds = [
+        {"lr": 2e-4, "steps": 400, "warmup": 40, "label": "Primary Learning"},
+        {"lr": 5e-5, "steps": 150, "warmup": 15, "label": "Refinement"},
+        {"lr": 2e-5, "steps": 75,  "warmup": 8,  "label": "Final Polish"},
+    ]
+
+    adapter_path = None
+
+    for i, rnd in enumerate(rounds, 1):
+        round_dir = f"{base_output_dir}/round_{i}"
+
+        print()
+        print("+" + "=" * 58 + "+")
+        label = rnd["label"]
+        print(f"|  ROUND {i}/{len(rounds)}: {label:<48} |")
+        print(f"|  LR: {rnd['lr']:<10} | Steps: {rnd['steps']:<10} | Warmup: {rnd['warmup']:<10}  |")
+        print("+" + "=" * 58 + "+")
+        print()
+
+        adapter_path, start_loss, end_loss = train(
+            data_path=data_path,
+            output_dir=round_dir,
+            model_id=model_id,
+            max_seq_len=max_seq_len,
+            lora_r=lora_r,
+            lora_alpha=lora_alpha,
+            lora_dropout=lora_dropout,
+            batch_size=batch_size,
+            grad_accum=grad_accum,
+            learning_rate=rnd["lr"],
+            max_steps=rnd["steps"],
+            warmup_steps=rnd["warmup"],
+            lr_scheduler_type="cosine",
+            logging_steps=DEFAULT_LOGGING_STEPS,
+            save_steps=DEFAULT_SAVE_STEPS,
+            save_total_limit=DEFAULT_SAVE_TOTAL_LIMIT,
+            target_modules=target_modules,
+            resume_from_adapter=adapter_path,
+        )
+
+        print()
+        print("-" * 60)
+        print(f"  Round {i} Summary:")
+        if start_loss is not None and end_loss is not None:
+            improvement = ((start_loss - end_loss) / start_loss) * 100 if start_loss > 0 else 0
+            print(f"    Start loss: {start_loss:.4f}")
+            print(f"    End loss:   {end_loss:.4f}")
+            print(f"    Improvement: {improvement:.1f}%")
+        else:
+            print("    Loss data unavailable")
+        print("-" * 60)
+
+    return adapter_path
+
+
+# -- Post-training evaluation -------------------------------------------------
+
+EVAL_QUESTIONS = [
+    "What is the time and space complexity of quicksort?",
+    "How do you detect a cycle in a directed graph?",
+    "Explain the sliding window technique with an example.",
+    "What is the difference between Dijkstra and Bellman-Ford?",
+    "How does a trie differ from a hash table for string storage?",
+    "Implement an LRU cache.",
+    "What is the Master Theorem and when does it apply?",
+    "Explain dynamic programming with the coin change problem.",
+    "How does Union-Find with path compression work?",
+    "What is a monotonic stack and when do you use it?",
+]
+
+
+def evaluate(adapter_path: str, model_id: str = DEFAULT_MODEL_ID) -> None:
+    """Run inference on 10 held-out eval questions with the trained adapter."""
+    print()
+    print("+" + "=" * 58 + "+")
+    print("|  POST-TRAINING EVALUATION                                |")
+    print("+" + "=" * 58 + "+")
+    print()
+
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    logger.info("Loading base model for evaluation ...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=False)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        device_map="auto",
+        max_memory={0: "20GiB"},
+        trust_remote_code=False,
+    )
+
+    logger.info("Loading adapter from %s ...", adapter_path)
+    model = PeftModel.from_pretrained(model, adapter_path)
+    model.eval()
+
+    for i, question in enumerate(EVAL_QUESTIONS, 1):
+        sep = "-" * 60
+        print(f"\n{sep}")
+        print(f"  EVAL {i}/{len(EVAL_QUESTIONS)}: {question}")
+        print(sep)
+
+        messages = [
+            {"role": "system", "content": "You are an expert DSA tutor. Be concise and give examples."},
+            {"role": "user", "content": question},
+        ]
+
+        if hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            prompt = (
+                f"[INST] You are an expert DSA tutor. Be concise and give examples.\n\n"
+                f"{question} [/INST]"
+            )
+
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=512,
+                temperature=0.3,
+                top_p=0.9,
+                do_sample=True,
+                pad_token_id=tokenizer.pad_token_id,
+            )
+
+        response = tokenizer.decode(
+            outputs[0][inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
+        )
+
+        print(f"\n{response.strip()}")
+        print(f"\n  [Response length: {len(response.strip())} chars]")
+
+    print()
+    print("=" * 60)
+    print("  EVAL COMPLETE")
+    print("=" * 60)
+    print()
+
+    del model
+    del tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+# -- CLI -----------------------------------------------------------------------
+
+def main() -> None:
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    default_output = f"adapters/v_{ts}"
+
+    parser = argparse.ArgumentParser(description="LoRA fine-tune Mistral-7B on DSA tutor data")
+    parser.add_argument("--data", required=True, help="Path to training JSONL")
+    parser.add_argument("--output", default=default_output, help="Adapter output directory")
+    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    parser.add_argument("--max-seq-len", type=int, default=DEFAULT_MAX_SEQ_LEN)
+    parser.add_argument("--lora-r", type=int, default=DEFAULT_LORA_R)
+    parser.add_argument("--lora-alpha", type=int, default=DEFAULT_LORA_ALPHA)
+    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument("--grad-accum", type=int, default=DEFAULT_GRAD_ACCUM)
+    parser.add_argument("--lr", type=float, default=DEFAULT_LEARNING_RATE)
+    parser.add_argument("--warmup-steps", type=int, default=DEFAULT_WARMUP_STEPS)
+    parser.add_argument("--lr-scheduler", default=DEFAULT_LR_SCHEDULER)
+    parser.add_argument("--logging-steps", type=int, default=DEFAULT_LOGGING_STEPS)
+    parser.add_argument("--save-steps", type=int, default=DEFAULT_SAVE_STEPS)
+    parser.add_argument("--multi-round", action="store_true",
+                        help="Use 3-round training (primary + refinement + polish)")
+    parser.add_argument("--evaluate", action="store_true",
+                        help="Run post-training evaluation")
+    args = parser.parse_args()
+
+    if args.multi_round:
+        adapter_path = train_rounds(
+            data_path=args.data,
+            base_output_dir=args.output,
+            model_id=args.model_id,
+            max_seq_len=args.max_seq_len,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            batch_size=args.batch_size,
+            grad_accum=args.grad_accum,
+        )
+    else:
+        adapter_path, _, _ = train(
+            data_path=args.data,
+            output_dir=args.output,
+            model_id=args.model_id,
+            max_seq_len=args.max_seq_len,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            max_steps=args.max_steps,
+            batch_size=args.batch_size,
+            grad_accum=args.grad_accum,
+            learning_rate=args.lr,
+            warmup_steps=args.warmup_steps,
+            lr_scheduler_type=args.lr_scheduler,
+            logging_steps=args.logging_steps,
+            save_steps=args.save_steps,
+        )
+
+    if args.evaluate:
+        evaluate(adapter_path, model_id=args.model_id)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,38 @@
+# ── Models & adapters (large binary files) ──────────────────────────────────
+models/
+adapters/
+
+# ── Database ────────────────────────────────────────────────────────────────
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# ── Environment / secrets ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Fine-tuning data (generated) ───────────────────────────────────────────
+finetune/data/train_*.jsonl
+
+# ── Frontend build artifacts ───────────────────────────────────────────────
+frontend-react/node_modules/
+frontend-react/dist/
+
+# ── Runtime/generated artifacts ────────────────────────────────────────────
+*.log
+*.zip
+nul
+data/mlml.db
+data/mlml.db-shm
+data/mlml.db-wal
+faiss_index/
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# ── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store

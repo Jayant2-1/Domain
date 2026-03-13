@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DSA Tutor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <h1>DSA Tutor</h1>
+            <div class="header-info">
+                <div class="user-section">
+                    <label for="username">User:</label>
+                    <input type="text" id="username" value="student" maxlength="100">
+                </div>
+                <div class="topic-section">
+                    <label for="topic">Topic:</label>
+                    <select id="topic">
+                        <option value="arrays">Arrays</option>
+                        <option value="linked_lists">Linked Lists</option>
+                        <option value="stacks_queues">Stacks & Queues</option>
+                        <option value="trees">Trees</option>
+                        <option value="graphs">Graphs</option>
+                        <option value="sorting">Sorting</option>
+                        <option value="searching">Searching</option>
+                        <option value="dynamic_programming">Dynamic Programming</option>
+                        <option value="recursion">Recursion</option>
+                        <option value="hashing">Hashing</option>
+                    </select>
+                </div>
+                <div class="skill-display">
+                    <span class="skill-label">ELO:</span>
+                    <span id="skill-rating">1000</span>
+                    <span class="skill-matches" id="skill-matches">(0 matches)</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Chat area -->
+        <main class="chat-container" id="chat-container">
+            <div class="message system-message">
+                <p>Welcome! Ask me any DSA question. Select a topic above and type your question below.</p>
+            </div>
+        </main>
+
+        <!-- Input area -->
+        <footer class="input-area">
+            <div class="input-row">
+                <textarea
+                    id="question-input"
+                    placeholder="Ask a DSA question…"
+                    rows="2"
+                    maxlength="4000"
+                ></textarea>
+                <button id="send-btn" title="Send">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13"></path>
+                        <path d="M22 2L15 22L11 13L2 9L22 2Z"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="input-hint">
+                <span>Press Enter to send, Shift+Enter for new line</span>
+                <span id="loading-indicator" class="hidden">Thinking…</span>
+            </div>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
