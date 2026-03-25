@@ -1,0 +1,1246 @@
+{
+  "app/__init__.py": {
+    "lines": 1,
+    "size": 0,
+    "imports": [],
+    "functions": [],
+    "classes": []
+  },
+  "app/auth.py": {
+    "lines": 47,
+    "size": 1838,
+    "imports": [
+      "__future__",
+      "app.config",
+      "bcrypt",
+      "datetime",
+      "jose",
+      "typing"
+    ],
+    "functions": [
+      "create_access_token",
+      "create_refresh_token",
+      "decode_token",
+      "hash_password",
+      "verify_password"
+    ],
+    "classes": []
+  },
+  "app/auth_middleware.py": {
+    "lines": 41,
+    "size": 1388,
+    "imports": [
+      "__future__",
+      "app.auth",
+      "app.mongo",
+      "fastapi",
+      "fastapi.security"
+    ],
+    "functions": [
+      "get_current_user"
+    ],
+    "classes": []
+  },
+  "app/auth_routes.py": {
+    "lines": 126,
+    "size": 4438,
+    "imports": [
+      "__future__",
+      "app.auth",
+      "app.auth_middleware",
+      "app.mongo",
+      "datetime",
+      "fastapi",
+      "logging",
+      "pydantic"
+    ],
+    "functions": [
+      "get_me",
+      "login",
+      "refresh_token",
+      "register"
+    ],
+    "classes": [
+      "LoginRequest",
+      "RefreshRequest",
+      "RegisterRequest",
+      "TokenResponse",
+      "UserResponse"
+    ]
+  },
+  "app/config.py": {
+    "lines": 55,
+    "size": 1932,
+    "imports": [
+      "__future__",
+      "pydantic_settings",
+      "typing"
+    ],
+    "functions": [],
+    "classes": [
+      "Settings"
+    ]
+  },
+  "app/database.py": {
+    "lines": 225,
+    "size": 8389,
+    "imports": [
+      "__future__",
+      "aiosqlite",
+      "contextlib",
+      "logging",
+      "pathlib",
+      "typing"
+    ],
+    "functions": [
+      "_connect",
+      "close_db",
+      "get_all_skill_ratings",
+      "get_interaction",
+      "get_or_create_topic",
+      "get_or_create_user",
+      "get_positive_interactions",
+      "get_skill_rating",
+      "init_db",
+      "insert_interaction",
+      "update_interaction_feedback",
+      "upsert_skill_rating"
+    ],
+    "classes": []
+  },
+  "app/domain_validator.py": {
+    "lines": 284,
+    "size": 11621,
+    "imports": [
+      "__future__",
+      "dataclasses",
+      "logging",
+      "re",
+      "typing"
+    ],
+    "functions": [
+      "detect_topic",
+      "validate_query"
+    ],
+    "classes": [
+      "ValidationResult"
+    ]
+  },
+  "app/finetune_routes.py": {
+    "lines": 236,
+    "size": 8173,
+    "imports": [
+      "__future__",
+      "app.config",
+      "app.services",
+      "asyncio",
+      "datetime",
+      "fastapi",
+      "finetune.prepare_data",
+      "finetune.train_lora",
+      "logging",
+      "pathlib",
+      "pydantic",
+      "time",
+      "typing"
+    ],
+    "functions": [
+      "__init__",
+      "_finetune_job",
+      "_run_finetune_sync",
+      "finetune_status",
+      "load_adapter",
+      "trigger_finetune"
+    ],
+    "classes": [
+      "AdapterLoadRequest",
+      "AdapterLoadResponse",
+      "FinetuneStatusResponse",
+      "FinetuneTriggerRequest",
+      "FinetuneTriggerResponse",
+      "_FinetuneState"
+    ]
+  },
+  "app/limiter.py": {
+    "lines": 12,
+    "size": 309,
+    "imports": [
+      "slowapi",
+      "slowapi.util"
+    ],
+    "functions": [],
+    "classes": []
+  },
+  "app/main.py": {
+    "lines": 216,
+    "size": 7786,
+    "imports": [
+      "__future__",
+      "app.auth_routes",
+      "app.config",
+      "app.database",
+      "app.finetune_routes",
+      "app.limiter",
+      "app.model_loader",
+      "app.mongo",
+      "app.retriever",
+      "app.routes",
+      "app.services",
+      "app.tutor_routes",
+      "asyncio",
+      "contextlib",
+      "fastapi",
+      "fastapi.middleware.cors",
+      "fastapi.responses",
+      "fastapi.staticfiles",
+      "logging",
+      "os",
+      "slowapi",
+      "slowapi.errors",
+      "starlette.middleware.base",
+      "sys",
+      "uuid",
+      "uvicorn"
+    ],
+    "functions": [
+      "__init__",
+      "_preload",
+      "_setup_logging",
+      "create_app",
+      "dispatch",
+      "lifespan"
+    ],
+    "classes": [
+      "APIKeyMiddleware",
+      "CorrelationIDMiddleware"
+    ]
+  },
+  "app/model_loader.py": {
+    "lines": 339,
+    "size": 12431,
+    "imports": [
+      "__future__",
+      "gc",
+      "logging",
+      "pathlib",
+      "peft",
+      "torch",
+      "transformers",
+      "typing"
+    ],
+    "functions": [
+      "__init__",
+      "_handle_oom",
+      "_make_bnb_config",
+      "current_adapter",
+      "generate",
+      "is_loaded",
+      "load",
+      "load_adapter",
+      "unload",
+      "unload_adapter"
+    ],
+    "classes": [
+      "ModelLoader",
+      "ModelOOMError"
+    ]
+  },
+  "app/mongo.py": {
+    "lines": 56,
+    "size": 1553,
+    "imports": [
+      "__future__",
+      "app.config",
+      "logging",
+      "motor.motor_asyncio",
+      "typing"
+    ],
+    "functions": [
+      "close_mongo",
+      "connect_mongo",
+      "get_db"
+    ],
+    "classes": []
+  },
+  "app/reasoning.py": {
+    "lines": 443,
+    "size": 16894,
+    "imports": [
+      "__future__",
+      "dataclasses",
+      "enum",
+      "logging",
+      "re",
+      "time"
+    ],
+    "functions": [
+      "__init__",
+      "_build_explanation_from_rag",
+      "_build_rag_fallback_answer",
+      "_get_socratic_questions",
+      "_is_garbage_output",
+      "_strip_code_from_rag",
+      "_user_wants_no_code",
+      "build_reasoning_messages",
+      "detect_intent",
+      "parse_thinking_output",
+      "run",
+      "to_dict"
+    ],
+    "classes": [
+      "IntentType",
+      "ReasoningPipeline",
+      "ReasoningResult"
+    ]
+  },
+  "app/retriever.py": {
+    "lines": 250,
+    "size": 9401,
+    "imports": [
+      "__future__",
+      "collections",
+      "dataclasses",
+      "faiss",
+      "json",
+      "logging",
+      "numpy",
+      "os",
+      "pathlib",
+      "re",
+      "sentence_transformers",
+      "typing"
+    ],
+    "functions": [
+      "__init__",
+      "_tokenize",
+      "get_context_text",
+      "is_loaded",
+      "keyword_search",
+      "load",
+      "search"
+    ],
+    "classes": [
+      "RetrievalResult",
+      "Retriever"
+    ]
+  },
+  "app/routes.py": {
+    "lines": 158,
+    "size": 5192,
+    "imports": [
+      "__future__",
+      "app.database",
+      "app.limiter",
+      "app.model_loader",
+      "app.services",
+      "asyncio",
+      "fastapi",
+      "logging",
+      "pydantic",
+      "typing"
+    ],
+    "functions": [
+      "ask",
+      "feedback",
+      "health",
+      "skills"
+    ],
+    "classes": [
+      "AskRequest",
+      "AskResponse",
+      "FeedbackRequest",
+      "FeedbackResponse",
+      "HealthResponse",
+      "SkillsResponse"
+    ]
+  },
+  "app/services.py": {
+    "lines": 251,
+    "size": 8040,
+    "imports": [
+      "__future__",
+      "app.config",
+      "app.database",
+      "app.model_loader",
+      "app.retriever",
+      "app.skill_engine",
+      "asyncio",
+      "logging",
+      "typing"
+    ],
+    "functions": [
+      "build_messages",
+      "get_model_loader",
+      "get_retriever",
+      "handle_ask",
+      "handle_feedback",
+      "handle_get_skills",
+      "model_is_loaded",
+      "retriever_is_loaded",
+      "set_model_loader",
+      "set_retriever"
+    ],
+    "classes": []
+  },
+  "app/skill_engine.py": {
+    "lines": 181,
+    "size": 5842,
+    "imports": [
+      "__future__",
+      "dataclasses",
+      "math",
+      "typing"
+    ],
+    "functions": [
+      "compute_new_rating",
+      "expected_score",
+      "get_k_factor",
+      "get_rating",
+      "rating_delta",
+      "summary",
+      "update"
+    ],
+    "classes": [
+      "SkillProfile",
+      "TopicRating"
+    ]
+  },
+  "app/tutor_routes.py": {
+    "lines": 135,
+    "size": 5183,
+    "imports": [
+      "__future__",
+      "app.limiter",
+      "app.model_loader",
+      "app.tutor_services",
+      "asyncio",
+      "fastapi",
+      "fastapi.responses",
+      "json",
+      "logging",
+      "pydantic",
+      "typing"
+    ],
+    "functions": [
+      "event_generator",
+      "tutor_ask",
+      "tutor_ask_stream"
+    ],
+    "classes": [
+      "HistoryMessage",
+      "TutorAskRequest",
+      "TutorAskResponse"
+    ]
+  },
+  "app/tutor_services.py": {
+    "lines": 283,
+    "size": 9013,
+    "imports": [
+      "__future__",
+      "app.config",
+      "app.database",
+      "app.domain_validator",
+      "app.model_loader",
+      "app.reasoning",
+      "app.services",
+      "app.skill_engine",
+      "asyncio",
+      "logging",
+      "typing"
+    ],
+    "functions": [
+      "_get_pipeline",
+      "handle_tutor_ask",
+      "handle_tutor_ask_stream"
+    ],
+    "classes": []
+  },
+  "finetune/__init__.py": {
+    "lines": 1,
+    "size": 0,
+    "imports": [],
+    "functions": [],
+    "classes": []
+  },
+  "finetune/build_hf_datasets.py": {
+    "lines": 467,
+    "size": 20094,
+    "imports": [
+      "__future__",
+      "argparse",
+      "datasets",
+      "datetime",
+      "json",
+      "logging",
+      "os",
+      "pathlib",
+      "re",
+      "subprocess",
+      "sys",
+      "textwrap",
+      "typing"
+    ],
+    "functions": [
+      "_clean",
+      "_difficulty_intro",
+      "_get",
+      "_is_dsa",
+      "_make_hint_question",
+      "_wrap_codealpaca",
+      "_wrap_leetcode",
+      "build_codealpaca",
+      "build_leetcode",
+      "load_jsonl",
+      "main",
+      "merge_deduplicate",
+      "write_jsonl"
+    ],
+    "classes": []
+  },
+  "finetune/build_training_from_corpus.py": {
+    "lines": 1175,
+    "size": 55581,
+    "imports": [
+      "__future__",
+      "json",
+      "pathlib",
+      "re",
+      "textwrap",
+      "typing"
+    ],
+    "functions": [
+      "_extract_edge_cases",
+      "build_context",
+      "build_response",
+      "build_think_block",
+      "extract_code_blocks",
+      "extract_complexities",
+      "generate_comparison_pairs",
+      "generate_conceptual_pairs",
+      "generate_hint_pairs",
+      "has_table",
+      "main",
+      "make_questions",
+      "parse_sections",
+      "process_file",
+      "strip_section_heading"
+    ],
+    "classes": []
+  },
+  "finetune/convert_leetcode.py": {
+    "lines": 211,
+    "size": 7212,
+    "imports": [
+      "__future__",
+      "json",
+      "pathlib",
+      "re",
+      "textwrap",
+      "typing"
+    ],
+    "functions": [
+      "_build_instruction",
+      "_build_response_from_solution",
+      "_build_response_no_solution",
+      "_clean_html",
+      "convert",
+      "main"
+    ],
+    "classes": []
+  },
+  "finetune/download_dsa_data.py": {
+    "lines": 170,
+    "size": 5533,
+    "imports": [
+      "__future__",
+      "datasets",
+      "json",
+      "pathlib",
+      "re",
+      "sys",
+      "typing"
+    ],
+    "functions": [
+      "is_dsa_related",
+      "main",
+      "process_dataset"
+    ],
+    "classes": []
+  },
+  "finetune/generate_quality_data.py": {
+    "lines": 2547,
+    "size": 131267,
+    "imports": [
+      "json",
+      "os",
+      "pathlib"
+    ],
+    "functions": [
+      "main"
+    ],
+    "classes": []
+  },
+  "finetune/merge_adapters.py": {
+    "lines": 88,
+    "size": 2646,
+    "imports": [
+      "__future__",
+      "argparse",
+      "logging",
+      "pathlib",
+      "peft",
+      "torch",
+      "transformers"
+    ],
+    "functions": [
+      "main",
+      "merge"
+    ],
+    "classes": []
+  },
+  "finetune/prepare_data.py": {
+    "lines": 103,
+    "size": 3081,
+    "imports": [
+      "__future__",
+      "aiosqlite",
+      "argparse",
+      "asyncio",
+      "datetime",
+      "json",
+      "logging",
+      "pathlib"
+    ],
+    "functions": [
+      "export_data",
+      "main"
+    ],
+    "classes": []
+  },
+  "finetune/run_full_training.py": {
+    "lines": 268,
+    "size": 9181,
+    "imports": [
+      "__future__",
+      "argparse",
+      "datetime",
+      "finetune.train_lora",
+      "json",
+      "os",
+      "pathlib",
+      "subprocess",
+      "sys",
+      "time",
+      "typing"
+    ],
+    "functions": [
+      "estimate_training_time",
+      "load_jsonl",
+      "main",
+      "merge_and_deduplicate",
+      "print_config",
+      "update_env_adapter"
+    ],
+    "classes": []
+  },
+  "finetune/run_seed_finetune.py": {
+    "lines": 59,
+    "size": 1593,
+    "imports": [
+      "__future__",
+      "datetime",
+      "finetune.train_lora",
+      "pathlib",
+      "sys"
+    ],
+    "functions": [
+      "main"
+    ],
+    "classes": []
+  },
+  "finetune/run_training_watchdog.py": {
+    "lines": 110,
+    "size": 3766,
+    "imports": [
+      "argparse",
+      "datetime",
+      "glob",
+      "logging",
+      "pathlib",
+      "subprocess",
+      "sys",
+      "time"
+    ],
+    "functions": [
+      "_latest_checkpoint",
+      "_run",
+      "main"
+    ],
+    "classes": []
+  },
+  "finetune/train_lora.py": {
+    "lines": 774,
+    "size": 28773,
+    "imports": [
+      "__future__",
+      "argparse",
+      "contextlib",
+      "datasets",
+      "datetime",
+      "gc",
+      "glob",
+      "json",
+      "logging",
+      "os",
+      "pathlib",
+      "peft",
+      "safetensors",
+      "safetensors.torch",
+      "sys",
+      "time",
+      "torch",
+      "transformers",
+      "transformers.modeling_utils",
+      "trl",
+      "typing"
+    ],
+    "functions": [
+      "__del__",
+      "__enter__",
+      "__exit__",
+      "__getattr__",
+      "__getitem__",
+      "__init__",
+      "_apply_py314_loading_patch",
+      "_cleanup_gpu",
+      "_ensure_loaded",
+      "_meta_slice",
+      "evaluate",
+      "format_for_sft",
+      "get_dtype",
+      "get_shape",
+      "get_slice",
+      "get_tensor",
+      "keys",
+      "load_jsonl",
+      "load_model_4bit",
+      "main",
+      "metadata",
+      "on_log",
+      "on_train_begin",
+      "on_train_end",
+      "train",
+      "train_rounds"
+    ],
+    "classes": [
+      "LiveProgressCallback",
+      "_SafeOpenWrapper",
+      "_TensorSliceProxy"
+    ]
+  },
+  "frontend-react/src/App.jsx": {
+    "lines": 30,
+    "size": 936,
+    "functions": [
+      "App"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/api.js": {
+    "lines": 120,
+    "size": 3763,
+    "functions": [
+      "askQuestion",
+      "askTutor",
+      "askTutorStream",
+      "getHealth",
+      "getSkills",
+      "sendFeedback"
+    ],
+    "export_tokens": []
+  },
+  "frontend-react/src/components/ChatMessage.jsx": {
+    "lines": 91,
+    "size": 3005,
+    "functions": [
+      "ChatMessage",
+      "MarkdownContent"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/EmptyState.jsx": {
+    "lines": 29,
+    "size": 963,
+    "functions": [
+      "EmptyState"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/Navbar.jsx": {
+    "lines": 44,
+    "size": 1203,
+    "functions": [
+      "Navbar",
+      "handleLogout"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/ProtectedRoute.jsx": {
+    "lines": 18,
+    "size": 428,
+    "functions": [
+      "ProtectedRoute"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/Scene3D.jsx": {
+    "lines": 127,
+    "size": 3491,
+    "functions": [
+      "ConnectionLines",
+      "NeuralSphere",
+      "Particles",
+      "Scene3D"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/ScrollSection.jsx": {
+    "lines": 30,
+    "size": 777,
+    "functions": [
+      "ScrollSection"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/Sidebar.jsx": {
+    "lines": 46,
+    "size": 1472,
+    "functions": [
+      "Sidebar"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/components/ThoughtBlock.jsx": {
+    "lines": 62,
+    "size": 1689,
+    "functions": [
+      "ThoughtBlock"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/context/AuthContext.jsx": {
+    "lines": 87,
+    "size": 2679,
+    "functions": [
+      "AuthProvider",
+      "useAuth"
+    ],
+    "export_tokens": []
+  },
+  "frontend-react/src/hooks/useScrollAnimation.js": {
+    "lines": 27,
+    "size": 626,
+    "functions": [
+      "useScrollAnimation"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/main.jsx": {
+    "lines": 11,
+    "size": 245,
+    "functions": [],
+    "export_tokens": []
+  },
+  "frontend-react/src/pages/DashboardPage.jsx": {
+    "lines": 241,
+    "size": 7613,
+    "functions": [
+      "DashboardPage",
+      "handleKeyDown",
+      "handleLogout",
+      "handleSuggestion"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/pages/LandingPage.jsx": {
+    "lines": 173,
+    "size": 5985,
+    "functions": [
+      "LandingPage"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/pages/LoginPage.jsx": {
+    "lines": 80,
+    "size": 2458,
+    "functions": [
+      "LoginPage"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend-react/src/pages/RegisterPage.jsx": {
+    "lines": 95,
+    "size": 3004,
+    "functions": [
+      "RegisterPage"
+    ],
+    "export_tokens": [
+      "function"
+    ]
+  },
+  "frontend/script.js": {
+    "lines": 228,
+    "size": 8880,
+    "functions": [
+      "apiGet",
+      "apiPost",
+      "appendMessage",
+      "escapeHtml",
+      "fetchSkills",
+      "getTopic",
+      "getUsername",
+      "scrollToBottom",
+      "sendQuestion",
+      "setLoading",
+      "submitFeedback",
+      "updateSkillDisplay"
+    ],
+    "export_tokens": []
+  },
+  "rag/__init__.py": {
+    "lines": 1,
+    "size": 0,
+    "imports": [],
+    "functions": [],
+    "classes": []
+  },
+  "rag/build_index.py": {
+    "lines": 236,
+    "size": 8021,
+    "imports": [
+      "__future__",
+      "argparse",
+      "faiss",
+      "json",
+      "logging",
+      "numpy",
+      "os",
+      "pathlib",
+      "sentence_transformers",
+      "sys",
+      "typing"
+    ],
+    "functions": [
+      "build",
+      "build_chunks",
+      "chunk_text",
+      "embed_and_build_index",
+      "load_documents",
+      "main",
+      "save_index"
+    ],
+    "classes": []
+  },
+  "resume_training.py": {
+    "lines": 43,
+    "size": 1116,
+    "imports": [
+      "finetune.train_lora",
+      "os",
+      "sys",
+      "traceback"
+    ],
+    "functions": [
+      "__init__",
+      "flush",
+      "write"
+    ],
+    "classes": [
+      "Tee"
+    ]
+  },
+  "resume_training_r3.py": {
+    "lines": 42,
+    "size": 1127,
+    "imports": [
+      "finetune.train_lora",
+      "os",
+      "sys",
+      "traceback"
+    ],
+    "functions": [
+      "__init__",
+      "flush",
+      "write"
+    ],
+    "classes": [
+      "Tee"
+    ]
+  },
+  "tests/__init__.py": {
+    "lines": 1,
+    "size": 0,
+    "imports": [],
+    "functions": [],
+    "classes": []
+  },
+  "tests/test_api.py": {
+    "lines": 165,
+    "size": 4584,
+    "imports": [
+      "__future__",
+      "app.main",
+      "app.mongo",
+      "httpx",
+      "os",
+      "pytest",
+      "pytest_asyncio"
+    ],
+    "functions": [
+      "app",
+      "client",
+      "test_health_endpoint",
+      "test_login",
+      "test_login_wrong_password",
+      "test_me_authenticated",
+      "test_me_unauthenticated",
+      "test_refresh_token",
+      "test_register",
+      "test_register_duplicate_email",
+      "test_register_duplicate_username"
+    ],
+    "classes": []
+  },
+  "tests/test_auth.py": {
+    "lines": 66,
+    "size": 1949,
+    "imports": [
+      "__future__",
+      "app.auth",
+      "datetime",
+      "jose",
+      "pytest"
+    ],
+    "functions": [
+      "test_access_token_roundtrip",
+      "test_custom_expiry",
+      "test_different_hashes_for_same_password",
+      "test_hash_and_verify",
+      "test_invalid_token_raises",
+      "test_refresh_token_roundtrip",
+      "test_token_contains_exp",
+      "test_wrong_password_fails"
+    ],
+    "classes": [
+      "TestJWT",
+      "TestPasswordHashing"
+    ]
+  },
+  "tests/test_database.py": {
+    "lines": 159,
+    "size": 5961,
+    "imports": [
+      "__future__",
+      "aiosqlite",
+      "app.database",
+      "os",
+      "pytest",
+      "pytest_asyncio"
+    ],
+    "functions": [
+      "_clean_rows",
+      "db_setup",
+      "test_create_topic",
+      "test_create_user",
+      "test_default_rating",
+      "test_get_all_ratings",
+      "test_idempotent_create",
+      "test_idempotent_topic",
+      "test_insert_and_feedback",
+      "test_positive_interactions_export",
+      "test_upsert_and_read",
+      "test_upsert_overwrites"
+    ],
+    "classes": [
+      "TestInteractions",
+      "TestSkillRatings",
+      "TestTopics",
+      "TestUsers"
+    ]
+  },
+  "tests/test_db_smoke.py": {
+    "lines": 62,
+    "size": 1884,
+    "imports": [
+      "app.database",
+      "asyncio",
+      "os"
+    ],
+    "functions": [
+      "main"
+    ],
+    "classes": []
+  },
+  "tests/test_model_inference.py": {
+    "lines": 31,
+    "size": 1144,
+    "imports": [
+      "torch",
+      "transformers"
+    ],
+    "functions": [],
+    "classes": []
+  },
+  "tests/test_rag.py": {
+    "lines": 266,
+    "size": 10357,
+    "imports": [
+      "__future__",
+      "app.retriever",
+      "faiss",
+      "json",
+      "numpy",
+      "os",
+      "pathlib",
+      "pytest",
+      "rag.build_index",
+      "sentence_transformers",
+      "tempfile",
+      "typing"
+    ],
+    "functions": [
+      "corpus_dir",
+      "index_dir",
+      "test_basic_chunking",
+      "test_basic_overlap",
+      "test_empty_query",
+      "test_empty_text",
+      "test_filenames_present",
+      "test_files_exist",
+      "test_get_context_text",
+      "test_index_built",
+      "test_load_and_search",
+      "test_loads_all_files",
+      "test_low_threshold_forces_keyword",
+      "test_metadata_matches_texts",
+      "test_missing_dir_raises",
+      "test_missing_index_raises_on_load",
+      "test_no_overlap",
+      "test_overlap_present",
+      "test_reload_gives_same_results",
+      "test_reload_index",
+      "test_reload_metadata",
+      "test_search_method_is_faiss",
+      "test_search_returns_scores",
+      "test_short_text",
+      "test_unloaded_retriever_returns_empty"
+    ],
+    "classes": [
+      "TestBuildChunks",
+      "TestChunkText",
+      "TestEmbedAndIndex",
+      "TestFallbackBehavior",
+      "TestKeywordSearch",
+      "TestLoadDocuments",
+      "TestRetriever",
+      "TestSaveAndReload"
+    ]
+  },
+  "tests/test_skill_engine.py": {
+    "lines": 263,
+    "size": 10358,
+    "imports": [
+      "__future__",
+      "app.skill_engine",
+      "math",
+      "pytest"
+    ],
+    "functions": [
+      "test_auto_creates_topic",
+      "test_correct_answer_positive_delta",
+      "test_correct_increases_rating",
+      "test_correct_moves_rating_up",
+      "test_default_values",
+      "test_deterministic",
+      "test_easier_question_larger_loss",
+      "test_equal_difficulty_correct_gives_half_k",
+      "test_equal_difficulty_incorrect_gives_neg_half_k",
+      "test_equal_ratings",
+      "test_established_user",
+      "test_extreme_ratings",
+      "test_harder_question_larger_gain",
+      "test_incorrect_answer_negative_delta",
+      "test_incorrect_decreases_rating",
+      "test_incorrect_moves_rating_down",
+      "test_intermediate_user",
+      "test_k_override",
+      "test_multiple_corrects_monotonic_increase",
+      "test_negative_rating",
+      "test_new_user",
+      "test_range",
+      "test_strong_user",
+      "test_summary",
+      "test_symmetry",
+      "test_topic_isolation",
+      "test_unplayed_topic_not_in_summary",
+      "test_update_increments_matches",
+      "test_update_returns_delta",
+      "test_update_returns_triple",
+      "test_uses_k_schedule",
+      "test_weak_user",
+      "test_zero_rating"
+    ],
+    "classes": [
+      "TestComputeNewRating",
+      "TestEdgeCases",
+      "TestExpectedScore",
+      "TestKFactor",
+      "TestRatingDelta",
+      "TestSkillProfile",
+      "TestTopicRating"
+    ]
+  },
+  "watch_training.py": {
+    "lines": 147,
+    "size": 5076,
+    "imports": [
+      "glob",
+      "json",
+      "os",
+      "subprocess",
+      "sys",
+      "time"
+    ],
+    "functions": [
+      "_gpu_stats",
+      "_read_step"
+    ],
+    "classes": []
+  }
+}

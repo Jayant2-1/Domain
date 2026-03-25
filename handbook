@@ -1,0 +1,1476 @@
+TECHNICAL HANDBOOK FOR MLML
+Offline Adaptive DSA Tutor
+Deep Reverse-Engineering Edition
+Date: 2026-03-13
+
+================================================================================
+0) HOW THIS HANDBOOK WAS BUILT
+================================================================================
+This handbook was generated from a full recursive repository traversal and direct
+inspection of source code, configs, scripts, tests, logs, model metadata, adapter
+metadata, and dataset files present in this workspace.
+
+Coverage method used:
+1. Recursive file inventory of non-git files.
+2. Classification into text vs binary artifacts.
+3. Deep parse of all source modules:
+   - app/*.py
+   - finetune/*.py
+   - rag/*.py
+   - tests/*.py
+   - frontend-react/src/*
+   - frontend/*
+4. Direct parsing of runtime/training logs and model/adapter configs.
+5. Dataset schema and line-count extraction for all finetune/data files.
+6. Validation of architecture from startup wiring, service orchestration, and API routes.
+
+Key inventory numbers:
+- Non-.git files in workspace: 21,385
+- Biggest external subtree: frontend-react/node_modules (20,934 files)
+- Non-vendor analyzable files (excluding node_modules, excluding .git): 452
+- Text files among analyzable files: 304
+- Binary files among analyzable files: 148
+
+Important note on "every file" requirement:
+- Every analyzable project file path was inventoried.
+- Every core source/config/script/test file was read directly and explained.
+- Binary/model/checkpoint artifacts were analyzed via metadata and state files.
+- Vendor dependencies (node_modules) are third-party package internals; they are
+  indexed but not semantically deconstructed line-by-line because they are external
+  dependencies, not project-authored logic.
+
+
+================================================================================
+1) EXECUTIVE OVERVIEW (PLAIN LANGUAGE)
+================================================================================
+What this project is:
+- MLML is an offline, adaptive Data Structures and Algorithms tutoring platform.
+- It combines a local LLM (Mistral-7B-Instruct-v0.3), local retrieval (FAISS +
+  MiniLM embeddings), user-skill tracking (Elo-like ratings), and LoRA fine-tuning.
+
+What problem it solves:
+- Students need more than direct answers; they need guidance tailored to skill.
+- Generic code models are often inconsistent in pedagogy and topic focus.
+- Cloud-only tutoring has cost/privacy/network constraints.
+
+Who it serves:
+- Junior to advanced developers learning DSA.
+- Interview preparation users.
+- ML engineers iterating domain-specific instruction tuning pipelines.
+
+What the system outputs:
+- DSA explanations and/or code answers.
+- Time and space complexity analysis.
+- Strategy comparison guidance.
+- Hint-first and Socratic style tutoring in tutor mode.
+- Streaming "thinking + answer" events to the UI.
+
+Core differentiators:
+1) Offline first:
+   - Model and retriever are local, no external inference API required.
+2) Adaptive teaching:
+   - Prompt style changes by user topic rating.
+3) Retrieval grounding:
+   - Answers can be grounded in curated DSA corpus chunks.
+4) Continuous improvement loop:
+   - Positive interactions can be exported and used for LoRA adapter updates.
+
+
+================================================================================
+2) COMPLETE REPOSITORY STRUCTURE AND MODULE RESPONSIBILITIES
+================================================================================
+Top-level map (functional view):
+
+MLML/
+|-- app/                   Backend API and runtime orchestration
+|-- finetune/              Dataset engineering + LoRA training
+|-- rag/                   Corpus + FAISS index build pipeline
+|-- frontend-react/        Main React client (current UI)
+|-- frontend/              Legacy vanilla JS client (fallback)
+|-- models/                Local base/embedding model artifacts
+|-- adapters/              LoRA adapters and checkpoints
+|-- faiss_index/           Persisted vector index + metadata
+|-- data/                  SQLite runtime database
+|-- tests/                 Unit/integration tests
+|-- sql/                   SQLite schema
+|-- Dockerfile             Container image build recipe
+|-- docker-compose.yml     Multi-service local deployment recipe
+|-- requirements.txt       Python package lock-like pinning
+|-- README.md              Human documentation (partially stale in places)
+
+Subtree interaction matrix:
+
+Component         Reads From                         Writes To
+--------------------------------------------------------------------------------
+app               data/mlml.db, faiss_index/,        interactions, ratings,
+                  models/, adapters/                  logs, optional auth docs
+
+finetune          finetune/data/, data/mlml.db,      adapters/*, merged models,
+                  models/                             finetune/data/*.jsonl
+
+rag               rag/corpus/*                       faiss_index/index.faiss,
+                                                     faiss_index/metadata.json
+
+frontend-react    /api endpoints                      browser storage (auth)
+
+tests             app, rag, db                        temp test databases/indexes
+
+
+================================================================================
+3) FILE-BY-FILE TECHNICAL ANALYSIS
+================================================================================
+This section explains each project-authored source/config/test file in depth.
+(Generated artifacts and repetitive checkpoint files are documented in Section 3.7
+and Appendix coverage ledgers.)
+
+------------------------------------------------------------------------------
+3.1 BACKEND CORE (app/)
+------------------------------------------------------------------------------
+
+[app/config.py]
+Purpose:
+- Central settings object for runtime configuration via pydantic-settings.
+
+Key settings fields:
+- db_path: SQLite path (default data/mlml.db)
+- model_id: local base model path (default models/Mistral-7B-Instruct-v0.3)
+- max_new_tokens: generation cap
+- inference_timeout: end-to-end model timeout
+- faiss_index_dir, rag_top_k, rag_score_threshold
+- adapter_dir: startup adapter path (default adapters/v_final)
+- host/port/log_level
+- mongodb_uri/mongodb_db
+- jwt secret/algorithm/exp settings
+- allowed_origins/api_key
+
+Design assumptions:
+- Environment variable prefix MLML_.
+- .env exists for local overrides.
+- Defaults are local-dev friendly; security defaults are not production-hardened.
+
+
+[app/main.py]
+Purpose:
+- FastAPI bootstrap, lifespan startup/shutdown, middleware composition,
+  router mounting, static frontend serving.
+
+Startup lifecycle:
+1) Logging setup
+2) SQLite init via init_db
+3) Mongo connection attempt (auth subsystem)
+4) Retriever construction + index load attempt
+5) ModelLoader creation
+6) Optional adapter preload
+7) Background model preload task
+
+Shutdown lifecycle:
+- unload model
+- close DB and mongo client
+
+Middleware:
+- CorrelationIDMiddleware: inject/echo request id
+- APIKeyMiddleware: optional x-api-key gate for /api/* except health
+- CORS middleware
+- slowapi rate limit handler integration
+
+Routing:
+- auth routes under /api/auth
+- core routes under /api
+- tutor routes under /api/tutor
+- finetune routes under /api/finetune
+
+Static serving behavior:
+- If frontend-react/dist exists, mount it at /
+- Else fallback to legacy frontend/
+
+
+[app/database.py]
+Purpose:
+- Async SQLite data layer (aiosqlite), no global persistent connection.
+
+Schema usage:
+- users
+- topics
+- skill_ratings
+- interactions
+
+Operational behavior:
+- _connect context manager sets WAL and foreign keys.
+- All methods open/close per-call connections for safety under async workloads.
+
+Core functions:
+- get_or_create_user, get_or_create_topic
+- get_skill_rating, upsert_skill_rating, get_all_skill_ratings
+- insert_interaction, update_interaction_feedback, get_interaction
+- get_positive_interactions for training export
+
+Design decisions:
+- Parameterized SQL everywhere.
+- Ratings default to 1000 if missing.
+- Positive interaction export sorted by created_at desc.
+
+
+[app/skill_engine.py]
+Purpose:
+- Pure Elo-like rating math with topic isolation support.
+
+Core math:
+- expected_score: standard logistic Elo expectation
+- rating_delta = K * (S - E)
+- compute_new_rating wrapper with K schedule by match count
+
+K-factor schedule:
+- <10 matches: 40
+- 10..29 matches: 32
+- 30+: 24
+
+Engineering rationale:
+- Faster adaptation for new users.
+- Stabilization for experienced users.
+
+
+[app/retriever.py]
+Purpose:
+- Runtime retrieval over FAISS index with embedding model and keyword fallback.
+
+Load phase:
+- Read index.faiss
+- Read metadata.json (contains text/source/chunk index)
+- Load sentence-transformer model locally if models/all-MiniLM-L6-v2 exists
+
+Search phase:
+1) Encode query to normalized embedding
+2) IndexFlatIP search (cosine via normalization)
+3) Keep results above threshold
+4) If threshold fails, fallback to keyword overlap search
+
+Output:
+- RetrievalResult entries with method="faiss" or method="keyword"
+- get_context_text joins chunks with source headers
+
+
+[app/model_loader.py]
+Purpose:
+- Manage lifecycle of quantized causal LM and optional LoRA adapter.
+
+Main responsibilities:
+- lazy load base model and tokenizer
+- generate text from chat messages or raw prompt
+- load/unload adapter hot-swap
+- unload model and free GPU memory
+- catch CUDA OOM and raise typed ModelOOMError
+
+Quantization config:
+- bitsandbytes 4-bit NF4
+- compute dtype float16
+- double quant enabled
+
+Generation config (call-time defaults):
+- temperature 0.4 (overridable)
+- top_p 0.9
+- repetition_penalty 1.15
+
+Prompting path:
+- Uses tokenizer.apply_chat_template when messages provided.
+
+Potential weakness:
+- Access to loader._adapter_path from health endpoint is semi-private coupling.
+
+
+[app/services.py]
+Purpose:
+- Core ask/feedback orchestration, singleton references to model/retriever.
+
+handle_ask pipeline:
+1) ensure user/topic rows
+2) get current rating
+3) fetch RAG context (if retriever loaded)
+4) build messages with level-dependent instruction style
+5) run model inference in worker thread with timeout
+6) persist interaction (feedback null initially)
+7) return response metadata
+
+build_messages behavior:
+- Three style bands: beginner / intermediate / advanced by rating.
+- Includes explicit instructions on code inclusion and complexity explanation.
+
+handle_feedback pipeline:
+- Find interaction
+- derive user/topic/difficulty
+- compute new rating via skill_engine
+- update interaction feedback and upsert new rating/matches
+
+
+[app/routes.py]
+Purpose:
+- Core REST endpoints /ask, /feedback, /skills/{username}, /health.
+
+Input/Output contracts:
+- AskRequest: username/topic/question/difficulty
+- AskResponse: interaction_id/response/rating/matches/rag_used
+- FeedbackRequest: interaction_id + feedback (-1..1)
+- FeedbackResponse: rating_before/after/delta/matches
+
+Resilience:
+- Explicit OOM -> HTTP 503
+- timeout -> HTTP 504
+- generic unexpected -> HTTP 500
+
+Rate limiting:
+- /ask limited to 10/minute via slowapi decorator.
+
+
+[app/domain_validator.py]
+Purpose:
+- Guardrail layer to keep tutor in DSA scope and reduce prompt injection.
+
+Mechanics:
+- Large keyword sets for DSA structures/algorithms/concepts/patterns
+- Single-word regex + multi-word phrase matching
+- Blocklist patterns for system prompt exfiltration/jailbreak phrases
+- Greeting detection and friendly greeting response
+- Vague query detection
+
+Validation behavior:
+- Hard block for blocklist matches
+- Allow if DSA keywords found
+- Allow if question-word style and at least minimal length
+- Allow long queries with no keywords (low-confidence permissive fallback)
+
+Topic auto-detection:
+- Heuristic scoring over topic keyword dictionaries.
+
+
+[app/reasoning.py]
+Purpose:
+- Thinking-mode single-pass reasoning parser and prompt shaping.
+
+Capabilities:
+- intent detection (solve/explain/hint/compare/analyze)
+- parse <think> ... </think> from raw model output
+- detect no-code user preference from question/history
+- code block stripping utility for prose-only fallback
+- optional garbage output checks and RAG-based fallback builders
+
+ReasoningPipeline.run:
+1) detect intent
+2) retrieve RAG context
+3) build compact prompt
+4) single generation call
+5) split analysis/answer
+6) estimate thinking_time proportionally by char distribution
+
+Design tradeoff:
+- One-pass generation lowers latency but may reduce control over separate
+  analysis/answer quality compared with two-pass pipelines.
+
+
+[app/tutor_services.py]
+Purpose:
+- Tutor-mode orchestration and SSE event semantics.
+
+Non-stream flow:
+- validate query
+- detect topic
+- get user/topic/rating
+- run reasoning pipeline or plain fallback
+- persist interaction
+- return enriched tutor response object
+
+Stream flow:
+- emit thinking_start
+- run pipeline
+- emit thinking_done with analysis
+- emit answering_done with answer
+- persist interaction
+- emit done metadata
+
+Notes:
+- feedback update helpers imported but not used in this module directly.
+
+
+[app/tutor_routes.py]
+Purpose:
+- /tutor/ask and /tutor/ask/stream API endpoints.
+
+Streaming transport:
+- StreamingResponse with text/event-stream
+- manual SSE framing with event/data lines
+
+Rate limiting:
+- 5/minute on tutor endpoints.
+
+
+[app/finetune_routes.py]
+Purpose:
+- Background fine-tuning trigger/status and adapter load endpoint.
+
+Flow for trigger:
+1) check no existing active job
+2) schedule async task
+3) task unloads inference model
+4) choose seed data or export positive interactions
+5) run sync train_lora in thread
+6) record status and adapter path
+7) attempt to reload inference model
+
+State handling:
+- In-memory _FinetuneState object; not durable across process restart.
+
+Parameterization:
+- min_feedback, max_steps, lr, lora_r, use_seed_data
+
+Critical compatibility risk:
+- _run_finetune_sync currently calls train(...) with tuple expectation that may
+  drift with train return contracts across edits. This should be regression-tested.
+
+
+[app/auth.py]
+Purpose:
+- bcrypt hash/verify + JWT access/refresh token helpers.
+
+Details:
+- access token includes type="access"
+- refresh token includes type="refresh"
+- decode_token validates against configured secret/algorithm
+
+
+[app/auth_middleware.py]
+Purpose:
+- FastAPI dependency to resolve current user from bearer token via Mongo query.
+
+Behavior:
+- Reject missing/invalid token with 401.
+- Ensure token type=access.
+- Loads user document excluding password hash.
+
+
+[app/auth_routes.py]
+Purpose:
+- Register/login/refresh/me endpoints backed by Mongo.
+
+Data model behavior:
+- unique email and username checks on register
+- returns access+refresh tokens
+- refresh endpoint validates refresh token then issues new token pair
+
+
+[app/mongo.py]
+Purpose:
+- Mongo motor client lifecycle and db accessor.
+
+Behavior:
+- creates unique indexes on users.email and users.username
+- ping validation on connect
+
+
+[app/limiter.py]
+Purpose:
+- shared slowapi Limiter instance.
+
+
+------------------------------------------------------------------------------
+3.2 TRAINING AND DATA ENGINEERING (finetune/)
+------------------------------------------------------------------------------
+
+[finetune/train_lora.py]
+Purpose:
+- Primary LoRA training script with single-round and multi-round schedules.
+
+Notable engineering in this file:
+1) Python 3.14 + safetensors compatibility patch:
+   - replaces safe_open slice path that triggered access violation in this stack.
+2) Windows WDDM memory behavior awareness:
+   - comments and explicit max_memory planning to avoid CPU offload surprises.
+3) LiveProgressCallback:
+   - progress bar + writes progress.json for external watcher.
+
+Default hyperparameters:
+- MODEL: models/Mistral-7B-Instruct-v0.3
+- seq_len 1024
+- LoRA r 64, alpha 128, dropout 0.05
+- target modules q/k/v/o and gate/up/down projections
+- batch size 1
+- grad accumulation 2
+- learning rate 1e-4
+- max steps 400
+- warmup 40
+- scheduler cosine
+- save every 100, keep 3
+
+Training implementation details:
+- Converts records into chat-templated text for SFTTrainer.
+- LoRA applied before trainer so trainable params remain fp32 for stability.
+- frozen bf16 params cast to fp16 for tensor-core speed on target GPU class.
+- optimizer adamw_torch
+- gradient checkpointing enabled
+
+Multi-round schedule:
+- Round 1: 2e-4, 400, warmup 40
+- Round 2: 5e-5, 150, warmup 15
+- Round 3: 2e-5, 75, warmup 8
+
+Evaluation utility:
+- Fixed set of 10 DSA questions, qualitative output only.
+
+
+[finetune/run_full_training.py]
+Purpose:
+- End-to-end orchestrator that merges datasets, asks confirmation, trains,
+  runs post-eval in subprocess, updates .env adapter path.
+
+Observed behavior mismatch:
+- Header says multi-round intent, but actual train call currently runs a single
+  625-step schedule in one round to reduce WDDM reload issues.
+
+
+[finetune/run_seed_finetune.py]
+Purpose:
+- Quick sanity finetune on 12 high-quality seed records.
+
+Config choices:
+- LoRA r=16 alpha=32
+- batch=1 grad_accum=4
+- lr=2e-4
+- max_steps=100
+
+
+[finetune/run_training_watchdog.py]
+Purpose:
+- Crash-resilient wrapper that relaunches train_lora with auto checkpoint resume.
+
+Mechanics:
+- max retries default 20
+- retry delay default 15s
+- on retry, inject --resume-from-checkpoint auto
+
+
+[finetune/prepare_data.py]
+Purpose:
+- Exports positive-feedback interactions from SQLite to JSONL.
+
+Record schema produced:
+{
+  "instruction": question,
+  "context": rag_context or "",
+  "response": response
+}
+
+
+[finetune/merge_adapters.py]
+Purpose:
+- Merge LoRA adapter into full base model (fp16 save), useful for deployment or
+  round restarts from merged base.
+
+
+[finetune/build_hf_datasets.py]
+Purpose:
+- Download + filter + transform HF datasets into project style and merge with
+  existing project datasets.
+
+Data sources:
+- sahil2801/CodeAlpaca-20k
+- newfacade/LeetCodeDataset
+
+Value-add transformations:
+- DSA keyword filtering
+- Socratic wrapping with <think> blocks and structured pedagogy
+- merge and deduplicate with local datasets
+
+Optional behavior:
+- can launch training subprocess after data build.
+
+
+[finetune/download_dsa_data.py]
+Purpose:
+- Optional supplement downloader from multiple HF instruction datasets with DSA
+  keyword filtering and dedup.
+
+
+[finetune/convert_leetcode.py]
+Purpose:
+- Convert merged_problems.json into dsa_master_training.jsonl.
+
+Pipeline:
+- topic filter to DSA topics
+- html cleanup
+- instruction builder from title/desc/examples/constraints
+- response builder from solution or fallback hints/template
+
+
+[finetune/build_training_from_corpus.py]
+Purpose:
+- Generate instruction/context/response examples from local RAG markdown corpus.
+
+Main mechanics:
+- parse markdown sections and hierarchy
+- generate question variants per section (explain/solve/analyze etc.)
+- build synthetic <think> blocks and contextualized responses
+- emit corpus_training.jsonl
+
+
+[finetune/generate_quality_data.py]
+Purpose:
+- Large static curated example list writer to quality_dsa_training.jsonl.
+
+Observation:
+- File is very large and mostly literal EXAMPLES payload.
+- Structure is straightforward but maintenance-heavy due hand-authored volume.
+
+
+[finetune/run_finetune.sh] and [finetune/run_finetune.bat]
+Purpose:
+- Scripted workflow for export -> train -> optional merge.
+
+Potential drift risk:
+- Arguments passed here may not always match current train_lora parser if script
+  and trainer evolve independently.
+
+
+------------------------------------------------------------------------------
+3.3 RAG LAYER (rag/)
+------------------------------------------------------------------------------
+
+[rag/build_index.py]
+Purpose:
+- Build FAISS index from corpus files.
+
+Flow:
+1) load all .md/.txt docs
+2) chunk words with overlap
+3) encode with sentence-transformers model
+4) normalize embeddings
+5) build IndexFlatIP
+6) save index and enriched metadata (including chunk text)
+
+Defaults:
+- chunk size 512 words
+- overlap 50 words
+- model sentence-transformers/all-MiniLM-L6-v2
+
+
+[rag/corpus/01_arrays.md ... 10_strings.md]
+Purpose:
+- Curated topical DSA reference knowledge base.
+
+Content characteristics:
+- Definitions, complexity tables, canonical pattern explanations, code snippets,
+  and practice tips across arrays/linked lists/stacks-queues/hash/trees/graphs/
+  sorting-dsa/DP/recursion- backtracking/strings.
+
+
+------------------------------------------------------------------------------
+3.4 FRONTEND (frontend-react/ and frontend/)
+------------------------------------------------------------------------------
+
+[frontend-react/package.json]
+Purpose:
+- Defines modern React stack dependencies and scripts.
+
+Key libraries:
+- react/react-dom
+- react-router-dom
+- framer-motion
+- react-markdown + remark-gfm + syntax highlighter
+- @react-three/fiber + drei + three
+
+
+[frontend-react/vite.config.js]
+Purpose:
+- Dev proxy /api -> http://127.0.0.1:8000
+- build chunk splitting (three/vendor bundles)
+
+
+[frontend-react/src/api.js]
+Purpose:
+- API client for ask, tutor ask, tutor stream, feedback, skills, health.
+
+Streaming handling:
+- manual parsing of SSE-like event lines from fetch body stream.
+
+
+[frontend-react/src/pages/DashboardPage.jsx]
+Purpose:
+- Main chat UI, streaming event handling, feedback submission, skill refresh,
+  status polling.
+
+Important UX behavior:
+- Sends recent 6 messages as history to tutor streaming endpoint.
+- Maintains assistant message placeholder and updates with event deltas.
+
+
+[frontend-react/src/context/AuthContext.jsx]
+Purpose:
+- localStorage token persistence, token verification, refresh fallback.
+
+Potential caveat:
+- Refresh flow failure logs out; no advanced silent-retry strategy.
+
+
+Other React components/pages:
+- App/main routing shell
+- chat rendering (including thought block)
+- navbar/sidebar/empty state
+- landing/login/register pages
+- scroll and 3D scene components
+
+
+[frontend/*]
+Purpose:
+- Legacy vanilla JS interface.
+
+Observations:
+- Direct endpoint paths use /ask and /feedback etc., which may be outdated if
+  backend requires /api prefix depending on static serving context.
+- Contains own feedback/update rendering logic.
+
+
+------------------------------------------------------------------------------
+3.5 TEST SUITE (tests/)
+------------------------------------------------------------------------------
+
+[test_auth.py]
+- password hashing correctness and JWT token behavior.
+
+[test_api.py]
+- auth endpoint integration and health endpoint checks.
+
+[test_database.py]
+- comprehensive async SQLite CRUD and rating/interactions tests.
+
+[test_rag.py]
+- chunking/index/reload/search/fallback deterministic behavior checks.
+
+[test_skill_engine.py]
+- Elo formula properties and edge cases.
+
+[test_db_smoke.py]
+- script-level DB smoke validation.
+
+[test_model_inference.py]
+- TinyLlama 4-bit quick infer script (not integrated assertion-heavy unit test).
+
+
+------------------------------------------------------------------------------
+3.6 INFRA/OPS FILES
+------------------------------------------------------------------------------
+
+[sql/init_db.sql]
+- Creates normalized schema and indexes.
+- Foreign keys with cascade for user/topic dependencies.
+
+[Dockerfile]
+- Node build stage for frontend-react.
+- CUDA runtime stage with Python 3.11.
+- Copies app/rag/finetune/frontend/sql and built dist.
+
+[docker-compose.yml]
+- Mongo service + app service.
+- GPU reservation block.
+- Env plumbing for model/db/auth.
+
+[.github/workflows/ci.yml]
+- Python setup and test jobs.
+- frontend build validation.
+- docker image build job on main push.
+
+[.env.example]
+- Local configuration template.
+- Contains older model default (TinyLlama) while code defaults use Mistral path.
+
+
+------------------------------------------------------------------------------
+3.7 GENERATED/ARTIFACT FILE FAMILIES
+------------------------------------------------------------------------------
+
+Adapters and checkpoints (adapters/*):
+- 17 adapter_config.json files across versions/checkpoints.
+- 12 trainer_state.json files analyzed for progress/loss snapshots.
+- repeated tokenizer/config files per checkpoint copy.
+- optimizer.pt/scheduler.pt/rng_state.pth/training_args.bin indicate trainer
+  checkpoint completeness.
+
+Model artifacts (models/*):
+- Mistral multi-shard safetensors/bin + tokenizer files.
+- MiniLM embedding model + ONNX/OpenVINO variants.
+- HF cache metadata files in .cache subtrees.
+
+Index/database/log artifacts:
+- faiss_index/index.faiss + metadata.json
+- data/mlml.db
+- backend.log, crash.log, training_round2.log
+
+Bytecode/caches:
+- __pycache__ trees in app/finetune/rag/tests
+- .pytest_cache
+
+
+================================================================================
+4) SYSTEM ARCHITECTURE (DETAILED)
+================================================================================
+
+Runtime architecture diagram (text):
+
+[Browser React Client]
+   |
+   | REST + SSE
+   v
+[FastAPI API Layer]
+   |
+   | validate + topic detect
+   v
+[Domain Validator]
+   |
+   | retrieve context
+   v
+[RAG Retriever]
+   |                  \
+   | context           \ fallback
+   v                    v
+[Prompt Builder]    [Keyword Search]
+   |
+   | messages
+   v
+[ModelLoader (Mistral 4-bit + optional LoRA)]
+   |
+   | output text (optionally with <think>)
+   v
+[Response Parser / Tutor Service]
+   |
+   | store interaction + rating updates
+   v
+[SQLite DB]
+
+
+Training architecture diagram:
+
+[SQLite interactions + curated datasets + HF converted datasets + corpus-generated]
+   |
+   | merge/filter/dedup
+   v
+[JSONL training set]
+   |
+   | SFT formatting
+   v
+[4-bit base model + LoRA adapters]
+   |
+   | SFTTrainer optimization
+   v
+[checkpoint-* + adapter_model.safetensors]
+   |
+   | optional hot-load in API runtime
+   v
+[inference behavior update]
+
+
+Control flow highlights:
+1. Startup is non-blocking for model readiness due background preload task.
+2. Requests still trigger lazy load if preload failed.
+3. Tutor stream endpoint emits semantic events, not token-by-token decoding.
+4. Fine-tune route unloads inference model first to reclaim VRAM.
+
+
+================================================================================
+5) DATASET ANALYSIS
+================================================================================
+
+Measured line counts (local files):
+- codealpaca_20k_converted.jsonl: 20022
+- codealpaca_hf.jsonl: 11389
+- combined_training.jsonl: 2754
+- combined_v2_training.jsonl: 17114
+- corpus_training.jsonl: 336
+- dsa_master_training.jsonl: 2742
+- leetcode_hf.jsonl: 2641
+- quality_dsa_training.jsonl: 67
+- seed_dsa_training.jsonl: 12
+- merged_problems.json: 169870 lines
+
+Schema classes found:
+A) Minimal schema:
+   {instruction, response}
+B) Full schema (dominant):
+   {instruction, context, response}
+
+Example full-schema record shape:
+{
+  instruction: "...problem statement or pedagogical question...",
+  context: "...difficulty or reference snippet or RAG context...",
+  response: "...detailed answer, often with <think> structure..."
+}
+
+Dataset source lineage (from scripts):
+1. Curated internal sets:
+   - seed_dsa_training
+   - quality_dsa_training
+2. Converted public problem corpora:
+   - merged_problems -> convert_leetcode -> dsa_master_training
+   - LeetCode HF variants -> leetcode_hf
+3. Public instruction corpora filtered for DSA:
+   - CodeAlpaca variants -> codealpaca_hf / converted
+4. Corpus-derived synthetic set:
+   - build_training_from_corpus -> corpus_training
+5. Runtime interaction exports:
+   - prepare_data from sqlite positives
+6. Composite merged sets:
+   - combined / combined_v2
+
+Bias and coverage analysis:
+- High emphasis on interview-style algorithm tasks.
+- Strong LeetCode-like formatting and canonical solution pathways.
+- Less representation for systems-level algorithm engineering contexts.
+- Possible overfitting to markdown-heavy explanatory style.
+
+Data leakage risk assessment:
+- Public benchmark-like problem statements likely present in training corpus,
+  so naive benchmark evaluation on similar public items may overestimate skill.
+
+Duplicate risk:
+- Dedup often instruction-string based; semantically similar paraphrases may remain.
+
+
+================================================================================
+6) DATA PREPROCESSING AND SAMPLE CONSTRUCTION
+================================================================================
+
+Main preprocessing operations discovered:
+1. HTML and entity cleanup.
+2. Markdown cleanup and section parsing.
+3. DSA-topic keyword filtering.
+4. Response wrapping with pedagogical templates and think blocks.
+5. Prompt/context composition from problem metadata and corpus snippets.
+6. Merging and deduplication by instruction key.
+
+How training samples are built in this project:
+- Many scripts convert source data to a unified instruction/context/response format.
+- For tutoring style, responses are transformed to include structured analysis and
+  complexity explanations, not just plain code output.
+
+Prompting style encoded into training data:
+- Socratic questions.
+- "explain why" framing.
+- complexity recap and edge cases.
+- often code snippets + prose.
+
+
+================================================================================
+7) MODEL ARCHITECTURE REVERSE ENGINEERING
+================================================================================
+
+Base model (Mistral-7B-Instruct-v0.3) concrete parameters:
+- model_type: mistral
+- hidden_size: 4096
+- layers: 32
+- attention heads: 32
+- kv heads: 8
+- intermediate_size: 14336
+- max_position_embeddings: 32768
+- vocab_size: 32768
+
+Inference class:
+- MistralForCausalLM (decoder-only transformer family)
+
+Embedding model (all-MiniLM-L6-v2):
+- BertModel derivative
+- hidden_size: 384
+- num_hidden_layers: 6
+- attention_heads: 12
+- used for semantic retrieval embeddings
+
+LoRA adapter structure:
+- PEFT LoRA for CausalLM
+- rank 64, alpha 128, dropout 0.05
+- target modules include both attention and MLP projections
+
+
+================================================================================
+8) TRAINING STRATEGY
+================================================================================
+
+Objective type:
+- Supervised instruction fine-tuning (SFT) over text field.
+
+Fine-tuning approach:
+- QLoRA-like workflow: base model in 4-bit, train LoRA adapters.
+
+Stability and memory strategy:
+- Keep LoRA trainable params in fp32.
+- quantized compute in fp16.
+- gradient checkpointing enabled.
+- conservative micro-batch + accumulation.
+
+Round strategy:
+- Supports either single extended run or multi-round decay schedule.
+- Multi-round reuses prior round adapter as start point.
+
+Resume strategy:
+- from checkpoint path
+- from previous adapter path
+- watchdog automation for crash recovery
+
+
+================================================================================
+9) TRAINING PIPELINE (STAGE-BY-STAGE)
+================================================================================
+
+Stage 1: Data ingestion
+- load_jsonl validates required keys and non-empty content.
+
+Stage 2: Formatting
+- format_for_sft builds role-based messages and applies chat template.
+
+Stage 3: Base model load
+- AutoModelForCausalLM with bitsandbytes NF4 quantization.
+
+Stage 4: Adapter attachment
+- get_peft_model with LoRA config or resume from prior adapter.
+
+Stage 5: Trainer config
+- SFTConfig setup (optimizer, scheduler, logging, checkpointing).
+
+Stage 6: Optimization
+- trainer.train with optional checkpoint resume.
+
+Stage 7: Save artifacts
+- adapter weights + tokenizer + checkpoint states.
+
+Stage 8: Optional evaluation
+- fixed prompt set inference sanity check.
+
+
+================================================================================
+10) HYPERPARAMETER REFERENCE TABLE
+================================================================================
+
+Parameter                       Value
+------------------------------------------------------------
+base model                      models/Mistral-7B-Instruct-v0.3
+seq length                      1024
+LoRA rank r                     64
+LoRA alpha                      128
+LoRA dropout                    0.05
+target modules                  q/k/v/o + gate/up/down projections
+batch size                      1
+grad accumulation               2
+effective microbatch factor     2 (batch * grad_accum)
+learning rate                   1e-4 default
+max steps                       400 default
+warmup steps                    40 default
+scheduler                       cosine
+optimizer                       adamw_torch
+max grad norm                   1.0
+gradient checkpointing          true
+logging steps                   10
+save steps                      100
+save total limit                3
+
+Multi-round schedule:
+Round    LR        Steps   Warmup
+---------------------------------
+1        2e-4      400     40
+2        5e-5      150     15
+3        2e-5      75      8
+
+
+================================================================================
+11) LOSS FUNCTION AND OPTIMIZATION DYNAMICS
+================================================================================
+
+Loss:
+- SFTTrainer token-level language modeling loss over formatted sequences.
+
+Optimization stack:
+- AdamW torch implementation.
+- cosine scheduler with warmup.
+- clipping at max_grad_norm 1.0.
+
+Expected gradient path:
+- primary update mass in LoRA adapter tensors.
+- base quantized model mostly static.
+
+Dynamics observed in trainer states:
+- Training loss generally decreases but includes spikes (expected in small-batch,
+  mixed-source instruction tuning).
+
+
+================================================================================
+12) TRAINING STATISTICS FROM ARTIFACTS AND LOGS
+================================================================================
+
+Recovered checkpoints:
+- Early versions: checkpoint-100/200 etc.
+- Final line: v_final checkpoint-600 and checkpoint-625 observed.
+
+Sample extracted progression from trainer state summaries:
+- v_final checkpoint-625 global_step: 625
+- first logged loss near 1.0962
+- last logged loss near 0.7318
+
+Other historical runs:
+- v_20260308 checkpoints showed lower end losses in that run family
+  (indicates run-to-run variation and dataset/config differences).
+
+Log-derived operational facts:
+- Backend startup loaded retriever and began model shard loading.
+- FAISS vectors loaded: 43
+- Embedding metadata entries: 43
+
+Failure log evidence:
+- Access violation in torch/transformers loading path under Python 3.14 stack.
+- Resume round2 log shows CPU/disk offload validation error from transformers
+  due VRAM planning constraints.
+
+
+================================================================================
+13) EVALUATION SYSTEM ANALYSIS
+================================================================================
+
+Current evaluation implementation:
+- Qualitative post-training inference against 10 fixed DSA prompts.
+- No automated pass/fail rubric.
+- No code execution validation harness.
+- No benchmark persistence framework.
+
+Existing quality proxies:
+- Trainer loss trajectory.
+- Manual reading of generated answers.
+- Unit tests for infrastructure/math/retrieval (not model pedagogy quality).
+
+Gaps:
+1. No pass@k.
+2. No algorithm correctness execution tests.
+3. No complexity-claim verifier.
+4. No anti-hallucination scoring.
+
+
+================================================================================
+14) INFERENCE PIPELINE DETAILS
+================================================================================
+
+Core ask endpoint flow:
+1. Receive payload.
+2. Resolve user/topic.
+3. Load rating/matches.
+4. Retrieve context if retriever loaded.
+5. Build role messages with rating-dependent style.
+6. Call model_loader.generate in worker thread and timeout wrapper.
+7. Persist interaction.
+8. Return response metadata.
+
+Tutor streaming flow:
+1. Validate query and detect topic.
+2. Emit thinking_start.
+3. Single-pass model call.
+4. Parse think + answer.
+5. Emit thinking_done and answering_done.
+6. Persist interaction.
+7. Emit done summary.
+
+Decoding configuration used in generation:
+- temperature sampling
+- top-p nucleus
+- repetition penalty
+- max_new_tokens cap
+
+
+================================================================================
+15) DEPLOYMENT ARCHITECTURE
+================================================================================
+
+Local dev deployment:
+- Backend: uvicorn app.main:app
+- Frontend: vite dev server with /api proxy
+- SQLite local file for app state
+- Mongo for auth records
+
+Container deployment:
+- docker-compose spins mongo + app
+- app image contains backend plus built React dist
+- GPU reservation in compose under deploy resources
+
+API exposure:
+- default backend port 8000
+- frontend port 3000 in dev
+
+
+================================================================================
+16) PERFORMANCE OPTIMIZATIONS
+================================================================================
+
+Implemented optimizations:
+1. 4-bit NF4 quantization for base LLM.
+2. LoRA parameter-efficient fine-tuning.
+3. Gradient checkpointing for training memory reduction.
+4. Lazy loading and explicit unload to control VRAM lifecycle.
+5. FAISS vector index for sublinear retrieval.
+6. Retrieval threshold and keyword fallback.
+7. Async API + thread offload for blocking model calls.
+8. Frontend manual chunk splitting of heavy libs.
+
+Where bottlenecks still remain:
+- Initial model shard load latency.
+- Frequent checkpoint I/O on slower disks.
+- CPU embedding path may bottleneck under high concurrency.
+- Single-model inference concurrency constrained by GPU memory.
+
+
+================================================================================
+17) HIDDEN ENGINEERING TRICKS AND NON-OBVIOUS DECISIONS
+================================================================================
+
+1) Python 3.14 safetensors loader patch in train_lora.
+2) WDDM-aware caution around cuda context initialization order.
+3) progress.json heartbeat file written by callback for external watcher.
+4) Watchdog relaunch with auto checkpoint scanning.
+5) Inference background preload while still allowing lazy fallback.
+6) Topic auto-detection in tutor flow, overriding supplied topic.
+
+
+================================================================================
+18) FAILURE MODES AND ROOT-CAUSE ANALYSIS
+================================================================================
+
+Observed concrete failures:
+
+A) Access violation crash (crash.log)
+- Context: torch/transformers state loading path under Python 3.14.
+- Symptom: Windows fatal exception, access violation in torch storage indexing.
+- Mitigation in repo: custom safe_open patch in train_lora path.
+
+B) Resume training VRAM/offload error (training_round2.log)
+- Symptom: transformers quantizer validation error about modules dispatched to
+  CPU/disk and need for offload config.
+- Root pressure: GPU memory planning under Windows stack conditions.
+
+C) Logging encoding issue in resume script
+- Symptom: cp1252 cannot encode arrow character in logging stream tee.
+- Impact: noisy traceback, but not primary training failure cause.
+
+Potential recurring modes:
+- Timeout in inference for long prompts under heavy load.
+- Adapter load failure due path mismatch or incompatible base model state.
+- Auth subsystem partial failure if Mongo unavailable.
+
+
+================================================================================
+19) SECURITY AND SAFETY REVIEW
+================================================================================
+
+Current safeguards:
+1. Optional API key middleware.
+2. JWT auth route set for account access.
+3. Prompt injection blocklist patterns.
+4. SQL parameterization and foreign key constraints.
+5. CORS whitelist configuration.
+
+Identified security concerns:
+1. Default jwt secret is insecure if unchanged.
+2. Blocklist-based prompt protection can be bypassed by paraphrase.
+3. No sandbox/execution checker for generated code.
+4. Limited rate-limiting granularity (IP based).
+5. No auditing/alerting framework for abuse patterns.
+
+Suggested mitigations:
+- Force secret/env validation at startup for non-dev mode.
+- Add allowlist policy for tutor mode domain envelope.
+- Add structured moderation and response risk tags.
+- Add per-user/token quotas and anomaly tracking.
+
+
+================================================================================
+20) SYSTEM LIMITATIONS
+================================================================================
+
+1) Evaluation maturity:
+- Mostly qualitative, no strong benchmark automation.
+
+2) Data quality heterogeneity:
+- Mixed curated and generic code corpora can dilute DSA specificity.
+
+3) Runtime split storage complexity:
+- SQLite for interactions and Mongo for auth increases ops burden.
+
+4) Hardware fragility:
+- Tight memory on 6GB class devices can cause loading instability.
+
+5) Config drift:
+- README/.env.example/compose/code defaults not fully synchronized.
+
+6) Script contract drift risk:
+- Some helper scripts may lag behind trainer CLI signature changes.
+
+
+================================================================================
+21) FUTURE IMPROVEMENTS (PRACTICAL ROADMAP)
+================================================================================
+
+Immediate (high ROI):
+1. Build executable correctness benchmark harness for core DSA tasks.
+2. Add structured evaluation metrics and artifact logging.
+3. Enforce strict startup validation of critical security/env settings.
+4. Consolidate config defaults into one authoritative source.
+
+Mid-term:
+5. Dataset quality scoring and semantic dedup pipeline.
+6. Add inference guardrails for unsafe code generation patterns.
+7. Add experiment tracking (run metadata, metrics, hyperparams, artifacts).
+8. Introduce regression tests for fine-tune route and script argument contracts.
+
+Long-term:
+9. Distilled tutor model variants for lower latency.
+10. Better retrieval reranking and answer faithfulness checks.
+11. Automated complexity reasoning verifier for generated explanations.
+
+
+================================================================================
+APPENDIX A — CRITICAL CONFIG/SCHEMA SNAPSHOTS
+================================================================================
+
+A1) Base model architecture (Mistral config):
+- layers 32, hidden 4096, heads 32, kv heads 8, vocab 32768
+
+A2) LoRA adapter config (v_final):
+- r 64, alpha 128, dropout 0.05
+- target modules: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
+
+A3) SQLite schema entities:
+- users
+- topics
+- skill_ratings
+- interactions
+
+A4) RAG index metadata:
+- 43 chunks indexed from corpus
+
+
+================================================================================
+APPENDIX B — SOURCE FILE COVERAGE LEDGER (PROJECT-AUTHORED)
+================================================================================
+
+Backend:
+- app/__init__.py
+- app/auth.py
+- app/auth_middleware.py
+- app/auth_routes.py
+- app/config.py
+- app/database.py
+- app/domain_validator.py
+- app/finetune_routes.py
+- app/limiter.py
+- app/main.py
+- app/model_loader.py
+- app/mongo.py
+- app/reasoning.py
+- app/retriever.py
+- app/routes.py
+- app/services.py
+- app/skill_engine.py
+- app/tutor_routes.py
+- app/tutor_services.py
+
+Training/data:
+- finetune/__init__.py
+- finetune/build_hf_datasets.py
+- finetune/build_training_from_corpus.py
+- finetune/convert_leetcode.py
+- finetune/download_dsa_data.py
+- finetune/generate_quality_data.py
+- finetune/merge_adapters.py
+- finetune/prepare_data.py
+- finetune/run_finetune.bat
+- finetune/run_finetune.sh
+- finetune/run_full_training.py
+- finetune/run_seed_finetune.py
+- finetune/run_training_watchdog.py
+- finetune/train_lora.py
+- finetune/train_lora.py.bak
+
+RAG:
+- rag/__init__.py
+- rag/build_index.py
+- rag/corpus/01_arrays.md
+- rag/corpus/02_linked_lists.md
+- rag/corpus/03_stacks_queues.md
+- rag/corpus/04_hash_tables.md
+- rag/corpus/05_trees.md
+- rag/corpus/06_graphs.md
+- rag/corpus/07_sorting_searching.md
+- rag/corpus/08_dynamic_programming.md
+- rag/corpus/09_recursion_backtracking.md
+- rag/corpus/10_strings.md
+
+Frontend (current):
+- frontend-react/index.html
+- frontend-react/package.json
+- frontend-react/vite.config.js
+- frontend-react/src/api.js
+- frontend-react/src/App.jsx
+- frontend-react/src/main.jsx
+- frontend-react/src/index.css
+- frontend-react/src/context/AuthContext.jsx
+- frontend-react/src/hooks/useScrollAnimation.js
+- frontend-react/src/components/ChatMessage.jsx
+- frontend-react/src/components/EmptyState.jsx
+- frontend-react/src/components/Navbar.jsx
+- frontend-react/src/components/ProtectedRoute.jsx
+- frontend-react/src/components/Scene3D.jsx
+- frontend-react/src/components/ScrollSection.jsx
+- frontend-react/src/components/Sidebar.jsx
+- frontend-react/src/components/ThoughtBlock.jsx
+- frontend-react/src/pages/DashboardPage.jsx
+- frontend-react/src/pages/LandingPage.jsx
+- frontend-react/src/pages/LoginPage.jsx
+- frontend-react/src/pages/RegisterPage.jsx
+
+Frontend (legacy):
+- frontend/index.html
+- frontend/script.js
+- frontend/style.css
+
+Tests:
+- tests/__init__.py
+- tests/test_api.py
+- tests/test_auth.py
+- tests/test_database.py
+- tests/test_db_smoke.py
+- tests/test_model_inference.py
+- tests/test_rag.py
+- tests/test_skill_engine.py
+
+Infra/docs:
+- README.md
+- requirements.txt
+- docker-compose.yml
+- Dockerfile
+- .env.example
+- .github/workflows/ci.yml
+- .vscode/tasks.json
+- sql/init_db.sql
+- resume_training.py
+- resume_training_r3.py
+- watch_training.py
+
+Artifacts analyzed via metadata/logs:
+- adapters/* (all versions/checkpoints)
+- models/Mistral-7B-Instruct-v0.3/*
+- models/all-MiniLM-L6-v2/*
+- faiss_index/index.faiss
+- faiss_index/metadata.json
+- data/mlml.db
+- backend.log
+- crash.log
+- training_round2.log
+
+
+================================================================================
+APPENDIX C — WHAT IS STILL UNKNOWN WITHOUT HEAVY BINARY INTROSPECTION
+================================================================================
+
+1. Exact internal weight statistics and per-layer adaptation magnitudes inside
+   .safetensors and .bin files.
+2. Exact token-level training corpus overlap with benchmark sets.
+3. Runtime quantitative quality across broad unseen benchmark suites.
+4. Throughput/latency profiles under load (no load-test artifacts in repo).
+
+
+END OF HANDBOOK

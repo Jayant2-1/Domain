@@ -472,6 +472,16 @@ def train(
         # the RTX 2060 (no native bf16) this cascades into nan grads.
         model = get_peft_model(model, lora_config)
 
+    # On resumed adapters the trainable LoRA params may come back as bf16.
+    # Force them to fp32 for stability on RTX 2060 (no native bf16).
+    n_lora_cast = 0
+    for param in model.parameters():
+        if param.requires_grad and param.dtype != torch.float32:
+            param.data = param.data.to(torch.float32)
+            n_lora_cast += 1
+    if n_lora_cast:
+        logger.info("Cast %d trainable params to fp32", n_lora_cast)
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -512,6 +522,16 @@ def train(
         processing_class=tokenizer,
         callbacks=[progress_cb],
     )
+
+    # Trainer/accelerate wrapping can recast trainable LoRA params.
+    # Enforce fp32 again here so gradients avoid bf16-only AMP paths.
+    n_trainable_fp32 = 0
+    for name, p in trainer.model.named_parameters():
+        if p.requires_grad and p.dtype != torch.float32:
+            p.data = p.data.to(torch.float32)
+            n_trainable_fp32 += 1
+    if n_trainable_fp32:
+        logger.info("Re-cast %d wrapped trainable params to fp32", n_trainable_fp32)
 
     # Cast frozen bf16 → fp16 for speed (Tensor Cores on Turing).
     # Trainable LoRA params are fp32 – leave them for gradient stability.
